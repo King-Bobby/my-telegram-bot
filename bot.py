@@ -2,12 +2,13 @@ import telebot
 import random
 import requests
 import os
+import feedparser
 from telebot import types
 from dotenv import load_dotenv
 
 load_dotenv()
 
-#My Bots Unique Token and keys
+#My Bots Unique Token and keys 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 WEATHER_API_KEY = os.getenv("WEATHER_API_KEY")
 NEWS_API_KEY = os.getenv("NEWS_API_KEY")
@@ -24,8 +25,8 @@ def build_main_menu():
     keyboard = types.InlineKeyboardMarkup()
 
     # callback_data is the label the code receives when clicked
-    btn_weather = types.InlineKeyboardButton("Weather", callback_data="weather")
-    btn_news = types.InlineKeyboardButton("News", callback_data="news")
+    btn_weather = types.InlineKeyboardButton("Weather", callback_data="weather_menu")
+    btn_news = types.InlineKeyboardButton("News", callback_data="news_menu")
     btn_joke = types.InlineKeyboardButton("Random Joke", callback_data="joke")
     btn_about = types.InlineKeyboardButton("About", callback_data="about")
     btn_help = types.InlineKeyboardButton("Help", callback_data="help")
@@ -34,7 +35,6 @@ def build_main_menu():
     keyboard.add(btn_weather, btn_news)
     keyboard.add(btn_joke)
     keyboard.add(btn_about, btn_help)
-
     return keyboard
 
 # This is to help users return to the menu
@@ -64,7 +64,6 @@ def build_weather_cities():
             row = []
     if row:                        #if there is a left over button, add it
         keyboard.add(*row)
-    
     # Back button at the button
     keyboard.add(types.InlineKeyboardButton("Back to Menu", callback_data="main_menu"))
     return keyboard
@@ -87,77 +86,116 @@ def build_news_categories():
         if len(row) == 2:
             keyboard.add(*row)
             row = []
-        if row:
-            keyboard.add(*row)
-        keyboard.add(types.InlineKeyboardButton("Back to Menu", callback_data="main_menu"))
-        return keyboard
+    if row:
+        keyboard.add(*row)
+    keyboard.add(types.InlineKeyboardButton("Back to Menu", callback_data="main_menu"))
+    return keyboard
+
+#Coordinates for each city in our menu
+CITY_COORDINATES = {
+    "Lagos": {"lat": 6.5244, "lon": 3.3792, "country": "Nigeria"},
+    "Abuja": {"lat": 9.0765, "lon": 7.3986, "country": "Nigeria"},
+    "Jos": {"lat": 9.8965, "lon": 8.8583, "country": "Nigeria"},
+    "London": {"lat": 51.5074, "lon": -0.1278, "country": "United Kingdom"},
+    "New York": {"lat": 40.7128, "lon": -74.0060, "country": "United States"},
+    "Dubai": {"lat": 25.2048, "lon": 55.2708, "country": "United Arab Emirates"},
+}
 
 # Fetch real weather from OpenWeatherMap API
 def get_weather(city):
+    print(f"DE")
     try:
-        #This is the url i send my request to
-        url = f"https://api.openweathermap.org/data/2.5/weather?q={city}&appid={WEATHER_API_KEY}&units=metric"
-        response = requests.get(url)
-        data =  response.json()
+        #Get coordinates for the requested city
+        coords = CITY_COORDINATES.get(city)
+        if not coords:
+            return f"X City '{city}' not found in our list."
+        
+        lat = coords["lat"]
+        lon = coords["lon"]
+        country = coords["country"]
 
-        # To check if API returned an error( city not found, etc.)
-        if data.get("cod") != 200:
-            return f" Weather Error: {data.get('message', 'Unknown error')}\nCode: {data.get('cod')}"
-
-        city_name = data["name"]
-        country = data["sys"]["country"]
-        temp = data["main"]["temp"]
-        feels_like = data["main"]["feels_like"]
-        humidity = data["main"]["humidity"]
-        description = data["weather"][0]["description"].title() #e.g. Partly cloudy
-        wind_speed = data["wind"]["speed"]
-
-        return (
-            f" *Weather in {city_name}, {country}*\n\n"
-            f" Temperature: *{temp} Celsius*\n"
-            f" Feels like: {feels_like} Celsius*\n"
-            f" Condition: {description}\n"
-            f" Humidity: {humidity}%\n"
-            f" Wind Speed: {wind_speed} m/s"
-        )
-    except Exception as e:
-        return f" Weather fetch failed: {str(e)}"
-
-#Fetch real News from News API
-def get_news(category="general"):
-    try:
+        #Build the Open-Meteo API Url
         url = (
-            f"https://newsapi.org/v2/top-headlines?"
-            f"category={category}&"
-            f"language=en&"
-            f"pageSize=5&"    #Get 5 articles
-            f"apiKey={NEWS_API_KEY}"
+            f"https://api.open-meteo.com/v1/forecast?"
+            f"latitude={lat}&longitude={lon}"
+            f"&current_weather=true"
+            f"&hourly=relative_humidity_2m,apparent_temperature,precipitation_probability"
+            f"&timezone=auto"
+            f"&forecast_days=1"
         )
-        response = requests.get(url)
+        response = requests.get(url, timeout=10)
         data = response.json()
 
-        # Response if the request was not successful
-        if data.get("status") != "ok":
-            return f" News Error: {data.get('message', 'Unknown error')}\n Code: {data.get('code')}"
-          
-        articles = data.get("articles", [])
-        if not articles:
-            return "No news articles found for this category right now."
+        #Extract current weather values 
+        current = data["current_weather"]
+        temp = current["temperature"]
+        wind_speed = current["windspeed"]
+        weather_code = current["weathercode"]
 
-        #Build the news message
-        message = f" *Top {category.title()} Headlines*\n\n"
+        #Get the first hourly valuesfor humidity and feels-like
+        # Open-Meteo returns hourly arrays - index[0] is the current hour
+        humidity = data["hourly"]["relative_humidity_2m"][0]
+        feels_like = data["hourly"]["apparent_temperature"][0]
+        rain_chance = data["hourly"]["precipitation_probability"][0]
 
-        for i, article in enumerate(articles, start=1):
-            title = article.get("title", "No title")
-            source = article.get("source", {}).get("name", "Unknown Source")
-            # Clean up titles that have source appended at the end
+        #WMO Weather code tells us the condition
+        def decode_weather(code):
+            if code == 0:                    return "Clear Sky"
+            elif code in [1, 2]:             return "Partly Cloudy"
+            elif code == 3:                  return "Overcast"
+            elif code in [45, 48]:           return "Foggy"
+            elif code in [51, 53, 55]:       return "Drizzle"
+            elif code in [61, 63, 65]:       return "Rainy"
+            elif code in [71, 73, 75]:       return "Snowy"
+            elif code in [80, 81, 82]:       return "Rain Showers"
+            elif code in [95, 96, 99]:       return "Thunderstorm"
+            else:                            return "Unknown"
+        description = decode_weather(weather_code)
+
+        return (
+            f" Weather in {city}, {country}\n\n"
+            f" Temperature: {temp} Celsius\n"
+            f" Feels like: {feels_like} Celsius\n"
+            f" Condition: {description}\n"
+            f" Humidity: {humidity}%\n"
+            f" Wind Speed: {wind_speed} km/h\n"
+            f" Rain Chance: {rain_chance}%"
+        )
+    except Exception as e:
+        return f" Weather error: {str(e)}"
+
+NEWS_FEEDS = {
+    "general": "https://rss.nytimes.com/services/xml/rss/nyt/HomePage.xml",
+    "technology": "https://feeds.bbci.co.uk/news/technology/rss.xml",
+    "sports": "https://feeds.bbci.co.uk/sport/rss.xml",
+    "business": "https://feeds.bbci.co.uk/news/business/rss.xml",
+    "health": "https://feeds.bbci.co.uk/news/health/rss.xml",
+    "entertainment": "https://feeds.bbci.co.uk/news/entertainment_and_arts/rss.xml",
+}
+#Fetch real News using RSS Feeds
+def get_news(category="general"):
+    try:
+        feed_url =  NEWS_FEEDS.get(category, NEWS_FEEDS["general"])
+        # feed parser reads and parses the RSS feed
+        feed = feedparser.parse(feed_url)
+        
+        #Check if any articles were sent back
+        if not feed.entries:
+            return f"No articles found right now. Please try again later."
+        
+        #Get source name from the feed itself
+        source = feed.feed.get("title", "News Feed")
+        message = f" *Top {category.title()} Headlines*\n"
+        message += f" Source: {source}\n\n"
+
+        #Show only first five articles
+        for i, entry in enumerate(feed.entries[:5], start=1):
+            title = entry.get("title", "No title")
+            #Clean up the title by removing anything after "-"
             if " - " in title:
                 title = title.rsplit(" - ", 1)[0]
-        
-            message += f"*{i}.* {title}\n"
-            message += f"   _{source}_\n\n"
-    
-        message += " _Updated just now_"
+            message += f"*{i}.* {title}\n\n"
+        message += "_Updated just now_"
         return message
     except Exception as e:
         return f"News fetch failed: {str(e)}"
@@ -187,23 +225,19 @@ def handle_button_click(call):
     message_id = call.message.message_id
 
     #call.data contains the callback data of the button that was clicked
-        # Main Menu - go back to the main menu
+    # Main Menu - go back to the main menu
     if call.data == "main_menu":
         bot.edit_message_text(
-            chat_id=chat_id,
-            message_id=message_id,
-            text=" *Main Menu*",
-            parse_mode="Markdown",
+            chat_id=chat_id, message_id=message_id,
+            text=" *Main Menu*", parse_mode="Markdown",
             reply_markup=build_main_menu()
         )
     #Weather Menu - shows city selection
     elif call.data == "weather_menu":
         bot.edit_message_text(
-            chat_id=chat_id,
-            message_id=message_id,
+            chat_id=chat_id, message_id=message_id,
             text=" *Select a city for the weather forecast:*",
-            parse_mode="Markdown",
-            reply_markup=build_weather_cities()
+            parse_mode="Markdown", reply_markup=build_weather_cities()
         )
     #Weather City- gets all the cities
     elif call.data.startswith("weather_") and call.data != "weather_menu":
@@ -211,47 +245,38 @@ def handle_button_click(call):
         city = call.data.split("_", 1)[1]
         # Show a loading message while data is fetched
         bot.edit_message_text(
-            chat_id=chat_id,
-            message_id=message_id,
-            text=f" Fetching weather for *{city}* ...",
+            chat_id=chat_id, message_id=message_id,
+            text=f" Fetching weather for {city} ...",
             parse_mode="Markdown"
         )
         #call weather function to get real data
         weather_text = get_weather(city)
         bot.edit_message_text(
-            chat_id=chat_id,
-            message_id=message_id,
-            text=weather_text,
-            parse_mode="Markdown",
-            reply_markup=build_back_button()
+            chat_id=chat_id, message_id=message_id,
+            text=weather_text, reply_markup=build_back_button()
         )
 
     #News Menu - shows category selection
     elif call.data == "news_menu":
         bot.edit_message_text(
-            chat_id=chat_id,
-            message_id=message_id,
+            chat_id=chat_id, message_id=message_id,
             text=" *Select a news category:*",
-            parse_mode="Markdown",
-            reply_markup=build_news_categories()
+            parse_mode="Markdown", reply_markup=build_news_categories()
         )
     
     #News Category - callback_data looks like "news_technology"
     elif call.data.startswith("news_"):
         category = call.data.split("_", 1)[1]
         bot.edit_message_text(
-            chat_id=chat_id,
-            message_id=message_id,
+            chat_id=chat_id, message_id=message_id,
             text=f" Fetching *{category.title()}* news...",
             parse_mode="Markdown"
         )
         #call news function to get real data
         news_text = get_news(category)
         bot.edit_message_text(
-            chat_id=chat_id,
-            message_id=message_id,
-            text=news_text,
-            parse_mode="Markdown",
+            chat_id=chat_id, message_id=message_id,
+            text=news_text, parse_mode="Markdown",
             reply_markup=build_back_button()
         )
 
@@ -266,34 +291,29 @@ def handle_button_click(call):
             "Why do Java developers wear glasses?\n Because they dont C#!",
         ]
         bot.edit_message_text(
-            chat_id=chat_id,
-            message_id=message_id,
+            chat_id=chat_id, message_id=message_id,
             text=f" *Random Joke*\n\n{random.choice(jokes)}",
-            parse_mode="Markdown",
-            reply_markup=build_back_button()
+            parse_mode="Markdown", reply_markup=build_back_button()
         )
     # ABOUT
     elif call.data == "about":
         bot.edit_message_text(
-            chat_id=chat_id,
-            message_id=message_id,
+            chat_id=chat_id, message_id=message_id,
             text=(
                 " *About This Bot*\n\n"
                 "Built by me, your favorite python programmer :)\n\n"
                 " *Tech Stack:*\n"
-                ". Python 3\n"
-                ". pyTelegramBotAPI\n"
-                ". OpenWeatherMap API\n"
-                ". NewsAPI\n\n"
+                "- Python 3\n"
+                "- pyTelegramBotAPI\n"
+                "- Open-Meteo API\n"
+                "- BBC & NYTimes RSS Feeds\n\n"
             ),
-            parse_mode="Markdown",
-            reply_markup=build_back_button()
+            parse_mode="Markdown", reply_markup=build_back_button()
         )
     # HELP    
     elif call.data == "help":
         bot.edit_message_text(
-            chat_id=chat_id,
-            message_id=message_id,
+            chat_id=chat_id, message_id=message_id,
             text=(
                 " *Help*\n\n"
                 "Use the menu buttons to navigate.\n\n"
@@ -305,13 +325,48 @@ def handle_button_click(call):
                 " News - Top headlines in 6 categories\n"
                 "Jokes - Random developer jokes"
             ),
-            parse_mode="Markdown",
-            reply_markup=build_back_button()
+            parse_mode="Markdown", reply_markup=build_back_button()
         )
     
     # "answer" the call back so telegram removes the "loading" spinner
     bot.answer_callback_query(call.id)
     
+#Bot welcomes itself when added to a group
+@bot.my_chat_member_handler()
+def bot_added_to_group(update):
+    # member or administrator meansthe bot was just added
+    if update.new_chat_member.status in ["member", "administrator"]:
+        chat_id = update.chat.id
+        group_name = update.chat.title
+        bot.send_message(
+            chat_id,
+            f"Hello everyone! I am glad here and ready to help!\n\n"
+            f"I am glad to be part of *{group_name}*.\n\n"
+            f"Type /menu to see what i can do.",
+            parse_mode="Markdown"
+        )
+
+#Bot Welcomes New Members into the group
+@bot.message_handler(content_types=["new_chat_members"])
+def welcome_new_member(message):
+    # Message.new_chat_members is a List incase multiple members join at once
+    for new_member in message.new_chat_members:
+        if new_member.id == bot.get_me().id:
+            continue
+        first_name = new_member.first_name
+        bot.send_message(
+            message.chat.id,
+            f"Welcome to the group, *{first_name}*! Glad to have you here.",
+            parse_mode="Markdown"
+        )
+#Bot says goodbye to members leaving the group
+@bot.message_handler(content_types=["left_chat_member"])
+def goodbye_member(message):
+    first_name = message.left_chat_member.first_name
+    bot.send_message(
+        message.chat.id,
+        f"Goodbye {first_name}, we will miss you!"
+    )
 
 # This handles any regular text message (not a command)
 @bot.message_handler(func=lambda message: True)
