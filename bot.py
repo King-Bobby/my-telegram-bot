@@ -3,22 +3,33 @@ import random
 import requests
 import os
 import feedparser
-from telebot import types
+from telebot import types, apihelper
 from dotenv import load_dotenv
+from database import setup_database, save_group, get_group_info, save_mention, count_message, get_message_count
+
+apihelper.ENABLE_MIDDLEWARE = True
 
 load_dotenv()
 
 #My Bots Unique Token and keys 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-WEATHER_API_KEY = os.getenv("WEATHER_API_KEY")
-NEWS_API_KEY = os.getenv("NEWS_API_KEY")
-# testing
+
 print(f"BOT_TOKEN loaded: {'Yes' if BOT_TOKEN else 'MISSING'}")
-print(f"WEATHER_API_KEY loaded: {'Yes' if WEATHER_API_KEY else 'MISSING'}")
-print(f"NEWS_API_KEY loaded: {'Yes' if NEWS_API_KEY else 'MISSING'}")
 
 #create the bot
-bot = telebot.TeleBot(BOT_TOKEN)
+bot = telebot.TeleBot(BOT_TOKEN, threaded=False)
+setup_database()
+
+@bot.middleware_handler(update_types=["message"])
+def count_all_messages(bot_instance, message):
+    if not message.chat:
+        return
+    
+    is_group = message.chat.type in ["group", "supergroup"]
+    chat_type = "group" if is_group else "private"
+    chat_name = message.chat.title if is_group else message.from_user.first_name
+
+    count_message(message.chat.id, chat_type, chat_name)
 
 def build_main_menu():
     # InlineKeyboardMarkup is the container that holds all buttons
@@ -218,6 +229,43 @@ def send_welcome(message):
 def show_menu(message):
     bot.send_message(message.chat.id, "*Main Menu*", parse_mode="Markdown", reply_markup=build_main_menu())
 
+# /admin command
+@bot.message_handler(commands=["admin"])
+def show_admin(message):
+    #This command only makes sense in a group
+    if message.chat.type not in ["group", "supergroup"]:
+        bot.reply_to(message, "This command only works inside a group.")
+        return
+    group_info = get_group_info(message.chat.id)
+
+    if not group_info:
+        bot.reply_to(message, "No admin information saved for this group yet.\n\n This happens if the bot was added befor the database was set up.")
+        return
+    
+    bot.reply_to(
+        message,
+        f"*Group Info*\n\n"
+        f"*Group Name:* {group_info['group_name']}\n\n"
+        f"*Bot Added By:*\n"
+        f"Name: {group_info['added_by_name']}\n"
+        f"Username: @{group_info['added_by_username']}\n\n"
+        f"*Date Added:* {group_info['date_added']}",
+        parse_mode="Markdown"
+    )
+
+# /totalmsg command
+@bot.message_handler(commands=["totalmsg"])
+def show_total_messages(message):
+    total =  get_message_count(message.chat.id)
+    # Fomat number with commas for example 1250 becomes 1,250
+    formatted = f"{total:,}"
+
+    if message.chat.type in ["group", "supergroup"]:
+        bot.reply_to(message, f"*Total Messages in this Group:* {formatted}", parse_mode="Markdown")
+    else:
+        bot.reply_to(message, f"*Your Total Messages:* {formatted}", parse_mode="Markdown"
+        )
+
 # This Callback function runs everytime ANY button is clicked
 @bot.callback_query_handler(func=lambda call:True)
 def handle_button_click(call):
@@ -338,6 +386,18 @@ def bot_added_to_group(update):
     if update.new_chat_member.status in ["member", "administrator"]:
         chat_id = update.chat.id
         group_name = update.chat.title
+        added_by = update.from_user
+        full_name = f"{added_by.first_name} {added_by.last_name or ''}". strip()
+
+        #save group info to database
+        save_group(
+            group_id            = chat_id,
+            group_name          = group_name,
+            added_by_id         = added_by.id,
+            added_by_username   = added_by.username or "No username",
+            added_by_name       = full_name    
+        )
+
         bot.send_message(
             chat_id,
             f"Hello everyone! I am glad here and ready to help!\n\n"
@@ -369,9 +429,31 @@ def goodbye_member(message):
     )
 
 # This handles any regular text message (not a command)
+@bot.message_handler(func=lambda message: message.text and 
+                    ("@" + bot.get_me().username).lower() in message.text.lower())
+def handle_text(message):
+    # Check if this a group or private chat
+    is_group = message.chat.type in ["group", "supergroup"]
+    group_id = message.chat.id if is_group else None
+    group_name = message.chat.title if is_group else None
+    #Save the mention to the database
+    save_mention(
+        message_id      = message.message_id,
+        message_text    = message.text,
+        user_id         = message.from_user.id,
+        username        = message.from_user.username or "No username",
+        first_name      = message.from_user.first_name,
+        group_id        = group_id,
+        group_name      = group_name
+    )
+    bot.reply_to(
+        message, 
+        f"Hello {message.from_user.first_name}! How can I help you?\n\n Type /menu to see what I can do."
+    )
+
 @bot.message_handler(func=lambda message: True)
 def handle_text(message):
-    bot.reply_to(message, "Please use the menu buttons to navigate!\n\n Type /menu to open it."),
+    bot.reply_to(message, "Please use the menu buttons to navigate!\n\n Type /menu to open it.")
 
 #This line starts the bot and keeps it running
 print("Bot is running with inline keyboards!... Press CTRL+C to stop.")
