@@ -5,7 +5,7 @@ import os
 import feedparser
 from telebot import types, apihelper
 from dotenv import load_dotenv
-from database import setup_database, save_group, get_group_info, save_mention, count_message, get_message_count
+from database import setup_database, save_group, get_group_info, save_mention, count_message, get_message_count, get_all_chats
 
 apihelper.ENABLE_MIDDLEWARE = True
 
@@ -246,7 +246,10 @@ def show_admin(message):
         message,
         f"*Group Info*\n\n"
         f"*Group Name:* {group_info['group_name']}\n\n"
-        f"*Bot Added By:*\n"
+        f"*Admin (Owner):*\n"
+        f"Name: {group_info['admin_name']}\n"
+        f"Username: @{group_info['admin_username']}\n\n"
+        f"*Added By:*\n"
         f"Name: {group_info['added_by_name']}\n"
         f"Username: @{group_info['added_by_username']}\n\n"
         f"*Date Added:* {group_info['date_added']}",
@@ -335,8 +338,13 @@ def handle_button_click(call):
             "Why do programmers prefer dark mode?\n Because light attracts bugs!\n",
             "Why did the programmer quit his job?\n Because he didnt get arrays!\n",
             "How do you comfort a JavaScript developer?\n Null it be okay!\n",
-            "Why was the python developer always calm?\n Becasue nothing ever got him hissed! ",
-            "Why do Java developers wear glasses?\n Because they dont C#!",
+            "Why was the python developer always calm?\n Because nothing ever got him hissed!\n",
+            "Why do Java developers wear glasses?\n Because they dont C#!\n",
+            "Why did the developer go broke?\n Because he used up all his cache!\n",
+            "What do you call a bear with no teeth?\n A gummy bear ... just like your code with no bytes!\n",
+            "Why do Python programmers prefer snake_case?\n Because they are always around snakes!\n",
+            "An SQL query walks into a bar, walks up to two tables and asks ...\n Can I join you?\n",
+            "Why was the JavaScript developer sad?\n Because he didnt know how to 'null' his feelings!\n",
         ]
         bot.edit_message_text(
             chat_id=chat_id, message_id=message_id,
@@ -350,11 +358,20 @@ def handle_button_click(call):
             text=(
                 " *About This Bot*\n\n"
                 "Built by me, your favorite python programmer :)\n\n"
-                " *Tech Stack:*\n"
+                "   *WHAT I CAN DO:*\n"
+                " - Fetch live weather for 6 cities\n"
+                " - Deliver top news in 6 categories\n"
+                " - Tell random developer jokes\n"
+                " - Welcome and bid farewell to group members\n"
+                " - Track number of messages in groups and private chats\n"
+                " - Broadcast messages to all users _(admin only)_\n\n"
+                "*Tech Stack:*\n"
                 "- Python 3\n"
                 "- pyTelegramBotAPI\n"
+                "- PostgreSQL (local database)\n"
                 "- Open-Meteo API\n"
                 "- BBC & NYTimes RSS Feeds\n\n"
+                " * Built as part of a Python learning journey*"
             ),
             parse_mode="Markdown", reply_markup=build_back_button()
         )
@@ -367,11 +384,19 @@ def handle_button_click(call):
                 "Use the menu buttons to navigate.\n\n"
                 "*Commands:*\n"
                 "/start - Welcome Message\n"
-                "/menu - Open Main Menu\n\n"
+                "/menu - Open Main Menu\n"
+                "/totalmsg - See total messages in this chat\n"
+                "/admin - Shows group admin and adder info _(groups only)_\n"
+                "/broadcast - Send a message to all chats _(admin only)_\n\n"
                 "*Features:*\n"
                 " Weather - Live forecast for 6 cities\n"
                 " News - Top headlines in 6 categories\n"
-                "Jokes - Random developer jokes"
+                "Jokes - Random developer jokes\n\n"
+                "*Group Features:*\n"
+                "- Welcomes itself when added to a group\n"
+                "- Welcomes new members\n"
+                "- Says goodbye to leaving members\n"
+                "- Tracks total messages per group"
             ),
             parse_mode="Markdown", reply_markup=build_back_button()
         )
@@ -389,18 +414,33 @@ def bot_added_to_group(update):
         added_by = update.from_user
         full_name = f"{added_by.first_name} {added_by.last_name or ''}". strip()
 
+        #Find the group owner by looping through all admins
+        admin_name = "Unknown"
+        admin_username = "Unknown"
+        try:
+            admins = bot.get_chat_administrators(chat_id)
+            for admin in admins:
+                if admin.status == "creator":
+                    admin_name = f"{admin.user.first_name} {admin.user.last_name or ''}".strip()
+                    admin_username = admin.user.username or "No username"
+                    break
+        except Exception:
+            pass        #If it cant fetch the admins, leave it as unknown
+
         #save group info to database
         save_group(
             group_id            = chat_id,
             group_name          = group_name,
             added_by_id         = added_by.id,
             added_by_username   = added_by.username or "No username",
-            added_by_name       = full_name    
+            added_by_name       = full_name,
+            admin_name          = admin_name,
+            admin_username      = admin_username    
         )
 
         bot.send_message(
             chat_id,
-            f"Hello everyone! I am glad here and ready to help!\n\n"
+            f"Hello everyone! I am glad to be here and ready to help!\n\n"
             f"I am glad to be part of *{group_name}*.\n\n"
             f"Type /menu to see what i can do.",
             parse_mode="Markdown"
@@ -428,10 +468,13 @@ def goodbye_member(message):
         f"Goodbye {first_name}, we will miss you!"
     )
 
+#Cache the bot username
+BOT_USERNAME = bot.get_me().username
+
 # This handles any regular text message (not a command)
 @bot.message_handler(func=lambda message: message.text and 
-                    ("@" + bot.get_me().username).lower() in message.text.lower())
-def handle_text(message):
+                    ("@" + BOT_USERNAME).lower() in message.text.lower())
+def handle_mention(message):
     # Check if this a group or private chat
     is_group = message.chat.type in ["group", "supergroup"]
     group_id = message.chat.id if is_group else None
@@ -450,6 +493,37 @@ def handle_text(message):
         message, 
         f"Hello {message.from_user.first_name}! How can I help you?\n\n Type /menu to see what I can do."
     )
+
+# ADMIN only: /broadcast command
+@bot.message_handler(commands=["broadcast"])
+def handle_broadcast(message):
+    admin_id = os.getenv("ADMIN_USER_ID")
+
+    # Check if the person sending the message is the admin
+    if not admin_id or str(message.from_user.id) != str(admin_id):
+        bot.reply_to(message, "X Unauthorized: Only the bot admin can use this command.")
+        return
+    
+    #Get the text after the /broadcast command
+    command_parts = message.text.split(" ", 1)
+    if len(command_parts) < 2:
+        bot.reply_to(message, "Usage: /broadcast <your message>")
+        return
+    broadcast_text = command_parts[1]
+    chat_ids = get_all_chats()
+
+    success_count = 0
+    fail_count = 0
+    
+    for chat_id in chat_ids:
+        try:
+            bot.send_message(chat_id, broadcast_text)
+            success_count += 1
+        except Exception:
+            #Bot was blocked or removed from that chat, just skip it
+            fail_count += 1
+    
+    bot.reply_to(message, f"Broadcast completed\n Sent: {success_count}\n Failed: {fail_count}")
 
 @bot.message_handler(func=lambda message: True)
 def handle_text(message):

@@ -26,6 +26,8 @@ def setup_database():
             added_by_id             BIGINT,
             added_by_username       TEXT,
             added_by_name           TEXT,
+            admin_name              TEXT,
+            admin_username          TEXT,
             date_added              TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
@@ -62,15 +64,21 @@ def setup_database():
     print("PostgreSQL database ready.")
 
 #Save group info when the bot is added
-def save_group(group_id, group_name, added_by_id, added_by_username, added_by_name):
+def save_group(group_id, group_name, added_by_id, added_by_username, added_by_name, admin_name, admin_username):
     conn = get_connection()
     cursor = conn.cursor()
     cursor.execute("""
         INSERT INTO groups
-        (group_id, group_name, added_by_id, added_by_username, added_by_name)
-        VALUES (%s, %s, %s, %s, %s)
-        ON CONFLICT (group_id) DO NOTHING
-    """, (group_id, group_name, added_by_id, added_by_username, added_by_name))
+        (group_id, group_name, added_by_id, added_by_username, added_by_name, admin_name, admin_username)
+        VALUES (%s, %s, %s, %s, %s, %s, %s)
+        ON CONFLICT (group_id) DO UPDATE SET
+            group_name              = EXCLUDED.group_name,
+            added_by_id             = EXCLUDED.added_by_id,
+            added_by_username       = EXCLUDED.added_by_username,
+            added_by_name           = EXCLUDED.added_by_name,
+            admin_name              = EXCLUDED.admin_name,
+            admin_username          = EXCLUDED.admin_username
+    """, (group_id, group_name, added_by_id, added_by_username, added_by_name, admin_name, admin_username))
     conn.commit()
     conn.close()
 
@@ -105,18 +113,11 @@ def count_message(chat_id, chat_type, chat_name):
     #Create the row if this chat is new
     cursor.execute("""
         INSERT INTO message_counts (chat_id, chat_type, chat_name, message_count)
-        VALUES (%s, %s, %s, 0)
-        ON CONFLICT (chat_id) DO NOTHING
-    """, (chat_id, chat_type, chat_name))
-
-    # Increment the count by 1
-    cursor.execute("""
-        UPDATE message_counts
-        SET message_count = message_count + 1,
+        VALUES (%s, %s, %s, 1)
+        ON CONFLICT (chat_id) DO UPDATE SET
+            message_count = message_counts.message_count + 1,
             last_updated = CURRENT_TIMESTAMP
-        WHERE chat_id = %s
-    """, (chat_id,))
-    
+    """, (chat_id, chat_type, chat_name))
     conn.commit()
     conn.close()
 
@@ -130,3 +131,12 @@ def get_message_count(chat_id):
     row = cursor.fetchone()
     conn.close()
     return row["message_count"] if row else 0
+
+# Get all chat IDs for broadcast
+def get_all_chats():
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT chat_id FROM message_counts")
+    rows = cursor.fetchall()
+    conn.close()
+    return [row["chat_id"] for row in rows]
