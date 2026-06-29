@@ -59,6 +59,18 @@ def setup_database():
         )
     """)
 
+    # Table 4: Logs every single message (for reports)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS message_logs(
+            id              SERIAL PRIMARY KEY,
+            chat_id         BIGINT,
+            chat_type       TEXT,
+            chat_name       TEXT,
+            user_id         BIGINT,
+            date_time       TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
     conn.commit()
     conn.close()
     print("PostgreSQL database ready.")
@@ -140,3 +152,53 @@ def get_all_chats():
     rows = cursor.fetchall()
     conn.close()
     return [row["chat_id"] for row in rows]
+
+# Log a single message (for report calculations)
+def log_message(chat_id, chat_type, chat_name, user_id):
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        INSERT INTO message_logs (chat_id, chat_type, chat_name, user_id)
+        VALUES (%s, %s, %s, %s)
+    """, (chat_id, chat_type, chat_name, user_id))
+    conn.commit()
+    conn.close()
+
+# Get group report: Total message + active users in a time period
+def get_group_report(chat_id, days):
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT
+            COUNT(*) AS total_messages,
+            COUNT(DISTINCT user_id) AS active_users
+        FROM message_logs
+        WHERE chat_id = %s
+        AND date_time >= NOW() - INTERVAL '%s days'
+    """, (chat_id, days))
+    row = cursor.fetchone()
+    conn.close()
+    return row
+
+# Get private chat report: total messages sent by that user in a time period
+def get_private_report(chat_id, days):
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT COUNT(*) AS total_messages
+        FROM message_logs
+        WHERE chat_id = %s
+        AND date_time >= NOW() - INTERVAL '%s days'
+    """, (chat_id, days))
+    row = cursor.fetchone()
+    conn.close()
+    return row
+
+#Gets all chats with type (for sending reports to everyone)
+def get_all_chats_with_type():
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT chat_id, chat_type, chat_name, FROM message_counts")
+    rows = cursor.fetchall()
+    conn.close()
+    return rows
