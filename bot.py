@@ -5,7 +5,9 @@ import os
 import feedparser
 from telebot import types, apihelper
 from dotenv import load_dotenv
-from database import setup_database, save_group, get_group_info, save_mention, count_message, get_message_count, get_all_chats
+from apscheduler.schedulers.background import BackgroundScheduler
+from database import setup_database, save_group, get_group_info, save_mention, count_message, get_message_count
+from database import get_all_chats, log_message, get_group_report, get_private_report, get_all_chats_with_type
 
 apihelper.ENABLE_MIDDLEWARE = True
 
@@ -30,6 +32,7 @@ def count_all_messages(bot_instance, message):
     chat_name = message.chat.title if is_group else message.from_user.first_name
 
     count_message(message.chat.id, chat_type, chat_name)
+    log_message(message.chat.id, chat_type, message.from_user.id)
 
 def build_main_menu():
     # InlineKeyboardMarkup is the container that holds all buttons
@@ -524,6 +527,42 @@ def handle_broadcast(message):
             fail_count += 1
     
     bot.reply_to(message, f"Broadcast completed\n Sent: {success_count}\n Failed: {fail_count}")
+
+#Send a report (daily/weekly/monthly) to all chats
+def send_reports(period_name, days):
+    chats = get_all_chats_with_type()
+    for chat in chats:
+        chat_id = chat["chat_id"]
+        chat_type = chat["chat_type"]
+        chat_name = chat["chat_name"]
+
+        try:
+            if chat_type == "group":
+                report = get_group_report(chat_id, days)
+                text = (
+                    f"*{period_name} Report - {chat_name}*\n\n"
+                    f"Total Messages: {report['total_messages']}\n"
+                    f"Active Users: {report['active_users']}"
+                )
+            else:
+                report = get_private_report(chat_id, days)
+                text = (
+                    f"* Your {period_name} Report*\n\n"
+                    f"Total Messages: {report['total_messages']}"
+                )
+            bot.send_message(chat_id, text, parse_mode="Markdown")
+        except Exception:
+            pass
+
+#Setting up the scheduler (for 3 alarms)
+scheduler = BackgroundScheduler()
+#Daily Report
+scheduler.add_job(lambda: send_reports("Daily", 1), "cron", hour=0, minute=0)
+#Weekly Report
+scheduler.add_job(lambda: send_reports("Weekly", 7), "cron", day_of_week="mon", hour=0, minute=0)
+#Monthly report
+scheduler.add_job(lambda: send_reports("Monthly", 30), "cron", day=1, hour=0, minute=0)
+scheduler.start()
 
 @bot.message_handler(func=lambda message: True)
 def handle_text(message):
